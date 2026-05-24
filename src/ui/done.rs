@@ -41,22 +41,33 @@ pub fn show(ui: &mut Ui, state: &DoneState) -> Option<DoneAction> {
 
         ui.add_space(24.0);
 
-        // Centered button row — no manual padding, vertical_centered handles it
+        // Center button row manually — ui.horizontal inside vertical_centered
+        // always takes full available width, so items start at the left edge
+        // unless we pad explicitly.
+        let show_launch = state.success && state.operation != Operation::Uninstall;
+        let launch_w = 100.0f32;
+        let close_w  =  60.0f32;
+        let gap      =   8.0f32;
+        let total    = if show_launch { launch_w + gap + close_w } else { close_w };
+        let pad      = ((ui.available_width() - total) / 2.0).max(0.0);
+
         ui.horizontal(|ui| {
-            if state.success && state.operation != Operation::Uninstall {
+            ui.add_space(pad);
+            if show_launch {
                 let launch_btn = egui::Button::new(
                     RichText::new("Launch Kadr").color(Color32::from_rgb(145, 190, 255)),
                 )
+                .min_size(egui::vec2(launch_w, 0.0))
                 .fill(Color32::from_rgba_premultiplied(99, 155, 255, 45))
                 .stroke(Stroke::new(1.0, Color32::from_rgba_premultiplied(99, 155, 255, 170)));
 
                 if ui.add(launch_btn).clicked() {
                     action = Some(DoneAction::Launch);
                 }
-                ui.add_space(8.0);
+                ui.add_space(gap);
             }
 
-            if ui.button("Close").clicked() {
+            if ui.add(egui::Button::new("Close").min_size(egui::vec2(close_w, 0.0))).clicked() {
                 action = Some(DoneAction::Close);
             }
         });
@@ -66,34 +77,32 @@ pub fn show(ui: &mut Ui, state: &DoneState) -> Option<DoneAction> {
 }
 
 fn draw_heart(ui: &mut Ui) {
-    let size = 28.0;
+    let size = 30.0;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let p = ui.painter();
     let color = Color32::from_rgb(155, 80, 220);
-    let c = rect.center();
+    let cx = rect.center().x;
+    let cy = rect.center().y - 1.0; // shift up 1px for visual balance
 
-    // Two filled circles for the top bumps
-    let r = size * 0.24;
-    let bump_y = c.y - size * 0.08;
-    p.circle_filled(egui::pos2(c.x - r * 0.72, bump_y), r, color);
-    p.circle_filled(egui::pos2(c.x + r * 0.72, bump_y), r, color);
-
-    // Filled triangle for the bottom point
-    let tl = egui::pos2(c.x - size * 0.46, c.y);
-    let tr = egui::pos2(c.x + size * 0.46, c.y);
-    let bot = egui::pos2(c.x, c.y + size * 0.44);
-    p.add(egui::Shape::convex_polygon(
-        vec![tl, tr, bot],
-        color,
-        Stroke::NONE,
-    ));
-
-    // Bridge rect between bumps and triangle to fill the gap
-    let bridge = egui::Rect::from_min_max(
-        egui::pos2(c.x - size * 0.46, c.y - size * 0.02),
-        egui::pos2(c.x + size * 0.46, c.y + size * 0.06),
-    );
-    p.rect_filled(bridge, 0.0, color);
+    // 10-point heart polygon with the characteristic concave dip at the top.
+    // Uses PathShape so the concavity is preserved (convex_polygon would fill it in).
+    let pts = vec![
+        egui::pos2(cx,         cy -  3.0), // top-center dip
+        egui::pos2(cx +  5.5,  cy - 12.0), // right lobe top
+        egui::pos2(cx + 12.5,  cy -  8.5), // right lobe outer
+        egui::pos2(cx + 13.5,  cy +  1.0), // right side
+        egui::pos2(cx +  9.0,  cy +  7.5), // right lower
+        egui::pos2(cx,         cy + 13.5), // bottom tip
+        egui::pos2(cx -  9.0,  cy +  7.5), // left lower
+        egui::pos2(cx - 13.5,  cy +  1.0), // left side
+        egui::pos2(cx - 12.5,  cy -  8.5), // left lobe outer
+        egui::pos2(cx -  5.5,  cy - 12.0), // left lobe top
+    ];
+    ui.painter().add(egui::Shape::Path(egui::epaint::PathShape {
+        points: pts,
+        closed: true,
+        fill: color,
+        stroke: egui::epaint::PathStroke::NONE,
+    }));
 }
 
 fn draw_status_icon(ui: &mut Ui, success: bool, operation: Operation) {
