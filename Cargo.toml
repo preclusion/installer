@@ -1,0 +1,18 @@
+[package]
+name = "installer"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "installer"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.34", features = ["default"] }
+egui = "0.34"
+winreg = "0.52"
+rfd = "0.15"
+anyhow = "1"
+
+[build-dependencies]
+winres = "0.1"
