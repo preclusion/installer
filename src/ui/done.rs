@@ -77,31 +77,46 @@ pub fn show(ui: &mut Ui, state: &DoneState) -> Option<DoneAction> {
 }
 
 fn draw_heart(ui: &mut Ui) {
-    let size = 30.0;
+    let size = 34.0f32;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-    let color = Color32::from_rgb(155, 80, 220);
-    let cx = rect.center().x;
-    let cy = rect.center().y - 1.0; // shift up 1px for visual balance
 
-    // 10-point heart polygon with the characteristic concave dip at the top.
-    // Uses PathShape so the concavity is preserved (convex_polygon would fill it in).
-    let pts = vec![
-        egui::pos2(cx,         cy -  3.0), // top-center dip
-        egui::pos2(cx +  5.5,  cy - 12.0), // right lobe top
-        egui::pos2(cx + 12.5,  cy -  8.5), // right lobe outer
-        egui::pos2(cx + 13.5,  cy +  1.0), // right side
-        egui::pos2(cx +  9.0,  cy +  7.5), // right lower
-        egui::pos2(cx,         cy + 13.5), // bottom tip
-        egui::pos2(cx -  9.0,  cy +  7.5), // left lower
-        egui::pos2(cx - 13.5,  cy +  1.0), // left side
-        egui::pos2(cx - 12.5,  cy -  8.5), // left lobe outer
-        egui::pos2(cx -  5.5,  cy - 12.0), // left lobe top
-    ];
+    let cx = rect.center().x;
+    let cy = rect.center().y + 1.5;
+    let scale = 0.84f32;
+
+    // Parametric heart:  x = 16 sin³t,  y = 13 cos t − 5 cos 2t − 2 cos 3t − cos 4t
+    //
+    // IMPORTANT: start at t = π (bottom tip of the heart) so egui's polygon
+    // tessellator fans triangles from a *convex* point.  Starting at t = 0
+    // (the concave top-center dip) causes a visible vertical seam artifact.
+    let n = 72usize;
+    let pts: Vec<egui::Pos2> = (0..n)
+        .map(|i| {
+            // offset by π so index 0 maps to the bottom tip
+            let t = std::f32::consts::TAU * (i as f32) / (n as f32)
+                  + std::f32::consts::PI;
+            let xf =  16.0 * t.sin().powi(3);
+            let yf = -(13.0 * t.cos()
+                      - 5.0 * (2.0 * t).cos()
+                      - 2.0 * (3.0 * t).cos()
+                      -       (4.0 * t).cos());
+            // Three overlapping low-frequency wobbles → organic hand-drawn feel
+            let w = (t * 2.1).sin() * 0.50
+                  + (t * 3.3 + 0.9).cos() * 0.22
+                  + (t * 1.4 - 0.4).sin() * 0.15;
+            let angle = yf.atan2(xf);
+            egui::pos2(
+                cx + (xf + w * angle.cos()) * scale,
+                cy + (yf + w * angle.sin()) * scale,
+            )
+        })
+        .collect();
+
     ui.painter().add(egui::Shape::Path(egui::epaint::PathShape {
         points: pts,
         closed: true,
-        fill: color,
-        stroke: egui::epaint::PathStroke::NONE,
+        fill: Color32::from_rgba_premultiplied(218, 62, 98, 225),
+        stroke: egui::epaint::PathStroke::new(1.5, Color32::from_rgb(242, 92, 118)),
     }));
 }
 
