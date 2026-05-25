@@ -77,40 +77,56 @@ pub fn show(ui: &mut Ui, state: &DoneState) -> Option<DoneAction> {
 }
 
 fn draw_heart(ui: &mut Ui) {
-    let size = 34.0f32;
+    let size = 36.0f32;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
 
     let cx = rect.center().x;
     let cy = rect.center().y + 1.5;
-    let scale = 0.84f32;
+    let scale = 0.88f32;
 
-    // Parametric heart:  x = 16 sin³t,  y = 13 cos t − 5 cos 2t − 2 cos 3t − cos 4t
-    //
-    // IMPORTANT: start at t = π (bottom tip of the heart) so egui's polygon
-    // tessellator fans triangles from a *convex* point.  Starting at t = 0
-    // (the concave top-center dip) causes a visible vertical seam artifact.
+    // Slight clockwise lean — real hand-drawn hearts are never perfectly upright.
+    let lean = 0.055f32; // ≈ 3°
+    let (sl, cl) = (lean.sin(), lean.cos());
+
+    // Index 0 maps to t = π (bottom tip) so the polygon starts at a convex point.
     let n = 72usize;
-    let pts: Vec<egui::Pos2> = (0..n)
-        .map(|i| {
-            // offset by π so index 0 maps to the bottom tip
-            let t = std::f32::consts::TAU * (i as f32) / (n as f32)
-                  + std::f32::consts::PI;
-            let xf =  16.0 * t.sin().powi(3);
-            let yf = -(13.0 * t.cos()
-                      - 5.0 * (2.0 * t).cos()
-                      - 2.0 * (3.0 * t).cos()
-                      -       (4.0 * t).cos());
-            // Three overlapping low-frequency wobbles → organic hand-drawn feel
-            let w = (t * 2.1).sin() * 0.50
-                  + (t * 3.3 + 0.9).cos() * 0.22
-                  + (t * 1.4 - 0.4).sin() * 0.15;
-            let angle = yf.atan2(xf);
-            egui::pos2(
-                cx + (xf + w * angle.cos()) * scale,
-                cy + (yf + w * angle.sin()) * scale,
-            )
-        })
-        .collect();
+    let pts: Vec<egui::Pos2> = (0..n).map(|i| {
+        let t = std::f32::consts::TAU * (i as f32 / n as f32) + std::f32::consts::PI;
+
+        let xf = 16.0 * t.sin().powi(3);
+        let yf_sym = -(13.0 * t.cos()
+            - 5.0 * (2.0 * t).cos()
+            - 2.0 * (3.0 * t).cos()
+            -       (4.0 * t).cos());
+
+        // Lift the top-center V-dip to remove the fill tessellation artifact.
+        // ((t/2).cos())^4  ==  1 at the top-center dip,  0 at the bottom tip.
+        let top_lift = ((t * 0.5).cos()).powi(4);
+        let yf = yf_sym + 3.2 * top_lift;
+
+        // Two *independent* wobble curves break the left↔right mirror symmetry.
+        // Amplitudes in heart-formula units; at this scale ≈ 0.88 px/unit visible.
+        let w_r = (t * 2.6 + 0.9).sin() * 1.25
+                + (t * 4.1 - 0.4).cos() * 0.52
+                + (t * 1.2 + 0.2).sin() * 0.28;
+        let w_l = (t * 1.9 - 1.1).sin() * 0.98
+                + (t * 3.5 + 0.6).cos() * 0.58
+                + (t * 5.0 - 0.8).sin() * 0.22;
+
+        // tanh blend: smooth left↔right transition, no hard seam at x = 0.
+        let blend = (xf * 0.22).tanh(); // −1 = full-left, +1 = full-right
+        let w = w_l * (1.0 - blend) * 0.5 + w_r * (1.0 + blend) * 0.5;
+
+        let angle = yf.atan2(xf);
+        let px = (xf + w * angle.cos()) * scale;
+        let py = (yf + w * angle.sin()) * scale;
+
+        // Apply lean (rotation around cx/cy).
+        egui::pos2(
+            cx + px * cl - py * sl,
+            cy + px * sl + py * cl,
+        )
+    }).collect();
 
     ui.painter().add(egui::Shape::Path(egui::epaint::PathShape {
         points: pts,
