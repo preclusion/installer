@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 eframe = { version = "0.34", features = ["default"] }
 egui = "0.34"
-winreg = "0.52"
+winreg = "0.56"
 rfd = "0.15"
 anyhow = "1"
 
