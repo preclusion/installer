@@ -88,8 +88,8 @@ pub fn show(
                 ui, btn_w,
                 "Install",
                 "Reinstall or change install options",
-                Color32::from_gray(160),
-                Color32::from_rgba_premultiplied(255, 255, 255, 8),
+                Color32::from_rgb(140, 115, 185),
+                Color32::from_rgba_premultiplied(140, 115, 185, 28),
             ) {
                 action = Some(WelcomeAction::Install);
             }
@@ -101,8 +101,8 @@ pub fn show(
                 ui, btn_w,
                 "Remove",
                 "Uninstall Kadr from this computer",
-                Color32::from_rgb(220, 100, 90),
-                Color32::from_rgba_premultiplied(200, 60, 50, 20),
+                Color32::from_rgb(205, 80, 110),
+                Color32::from_rgba_premultiplied(180, 60, 90, 22),
             ) {
                 action = Some(WelcomeAction::Remove);
             }
@@ -115,7 +115,7 @@ pub fn show(
                 "Install",
                 "Set up Kadr on this computer",
                 Color32::from_rgb(99, 155, 255),
-                Color32::from_rgba_premultiplied(99, 155, 255, 40),
+                Color32::from_rgba_premultiplied(99, 155, 255, 38),
             ) {
                 action = Some(WelcomeAction::Install);
             }
@@ -153,12 +153,12 @@ fn draw_patch_notes(ui: &mut Ui) {
             ui.painter().rect_filled(
                 box_rect,
                 4.0,
-                Color32::from_rgba_premultiplied(255, 255, 255, 5),
+                Color32::from_rgb(18, 16, 26),
             );
             ui.painter().rect_stroke(
                 box_rect,
                 4.0,
-                egui::Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 255, 255, 12)),
+                egui::Stroke::new(1.0, Color32::from_rgb(45, 38, 65)),
                 egui::StrokeKind::Inside,
             );
 
@@ -206,10 +206,10 @@ fn action_row(
 
     ui.painter().rect(rect, 6.0, fill, Stroke::new(1.0, stroke_color), egui::StrokeKind::Outside);
 
-    let bar = egui::Rect::from_min_size(rect.min, egui::vec2(3.0, height));
+    let bar = egui::Rect::from_min_size(rect.min, egui::vec2(6.0, height));
     ui.painter().rect_filled(bar, egui::epaint::CornerRadiusF32 { nw: 6.0, sw: 6.0, ne: 0.0, se: 0.0 }, accent);
 
-    let text_x = rect.min.x + 20.0;
+    let text_x = rect.min.x + 22.0;
     ui.painter().text(
         egui::pos2(text_x, rect.min.y + 13.0),
         egui::Align2::LEFT_TOP,

@@ -9,9 +9,9 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Kadr Installer")
-            .with_inner_size([660.0, 460.0])
-            .with_min_inner_size([660.0, 460.0])
-            .with_max_inner_size([660.0, 460.0])
+            .with_inner_size([660.0, 520.0])
+            .with_min_inner_size([660.0, 520.0])
+            .with_max_inner_size([660.0, 520.0])
             .with_resizable(false)
             .with_icon(load_icon()),
         ..Default::default()

@@ -55,7 +55,7 @@ impl eframe::App for InstallerApp {
         let ctx = ui.ctx().clone();
         apply_theme(&ctx);
 
-        let frame = egui::Frame::default().fill(egui::Color32::from_rgb(10, 10, 13));
+        let frame = egui::Frame::default().fill(egui::Color32::from_rgb(11, 10, 16));
         egui::CentralPanel::default()
             .frame(frame)
             .show_inside(ui, |ui| {
@@ -225,7 +225,7 @@ fn draw_header(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(available_w, height), egui::Sense::hover());
     let p = ui.painter();
 
-    p.rect_filled(rect, 0.0, egui::Color32::from_rgb(14, 14, 18));
+    p.rect_filled(rect, 0.0, egui::Color32::from_rgb(15, 13, 22));
 
     p.text(
         rect.min + egui::vec2(24.0, 12.0),
@@ -252,7 +252,7 @@ fn draw_header(ui: &mut egui::Ui) {
         egui::Align2::RIGHT_CENTER,
         &ver_text,
         egui::FontId::monospace(10.5),
-        egui::Color32::from_gray(60),
+        egui::Color32::from_gray(80),
     );
 
     p.hline(
@@ -265,12 +265,12 @@ fn draw_header(ui: &mut egui::Ui) {
 fn apply_theme(ctx: &egui::Context) {
     let mut style = (*ctx.global_style()).clone();
     style.visuals.dark_mode = true;
-    style.visuals.panel_fill = egui::Color32::from_rgb(10, 10, 13);
-    style.visuals.window_fill = egui::Color32::from_rgb(16, 16, 20);
-    style.visuals.extreme_bg_color = egui::Color32::from_rgb(8, 8, 10);
-    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(22, 22, 28);
-    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(30, 30, 40);
-    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(40, 40, 55);
+    style.visuals.panel_fill = egui::Color32::from_rgb(11, 10, 16);
+    style.visuals.window_fill = egui::Color32::from_rgb(16, 14, 22);
+    style.visuals.extreme_bg_color = egui::Color32::from_rgb(8, 7, 12);
+    style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(22, 20, 30);
+    style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(30, 27, 42);
+    style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(40, 36, 58);
     style.visuals.override_text_color = Some(egui::Color32::from_gray(210));
     style.visuals.widgets.noninteractive.bg_stroke =
         egui::Stroke::new(1.0, egui::Color32::from_gray(35));
