@@ -1,3 +1,3 @@
 • In-app video playback via libmpv (no external player needed)
-• Installer now shows version info and release notes
-• Faster image loading with async thumbnail decode
+• Faster image loading — async thumbnails and JPEG preload
+• Lightweight installer — downloads files at install time

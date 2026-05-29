@@ -2,8 +2,6 @@ use std::path::Path;
 
 use egui::{Color32, RichText, Stroke, Ui};
 
-const PATCH_NOTES: &str = include_str!("../../patchnotes.txt");
-
 pub enum WelcomeAction {
     Install,
     Update,
@@ -14,6 +12,7 @@ pub fn show(
     ui: &mut Ui,
     existing_dir: Option<&Path>,
     installed_version: Option<&str>,
+    total_install_size: Option<u64>,
 ) -> Option<WelcomeAction> {
     let mut action = None;
 
@@ -29,7 +28,6 @@ pub fn show(
         ui.add_space(6.0);
 
         if let Some(dir) = existing_dir {
-            // Version comparison row
             let installed_str = installed_version.unwrap_or("unknown");
             let this_str = env!("KADR_VERSION");
             ui.label(
@@ -55,14 +53,26 @@ pub fn show(
                     .color(Color32::from_gray(100)),
             );
         }
+
+        ui.add_space(6.0);
+
+        // Network + size info
+        let size_str = if existing_dir.is_none() {
+            match total_install_size {
+                Some(total) => format!("Requires internet connection  ·  ~{} disk space", fmt_size_abs(total)),
+                None => "Requires internet connection  ·  calculating size…".to_owned(),
+            }
+        } else {
+            "Requires internet connection".to_owned()
+        };
+        ui.label(
+            RichText::new(size_str)
+                .size(11.0)
+                .color(Color32::from_gray(70)),
+        );
     });
 
-    ui.add_space(14.0);
-
-    // ── Patch notes ───────────────────────────────────────────────────────────
-    draw_patch_notes(ui);
-
-    ui.add_space(18.0);
+    ui.add_space(22.0);
 
     // ── Buttons ───────────────────────────────────────────────────────────────
     let btn_w = 400.0;
@@ -74,7 +84,7 @@ pub fn show(
             if action_row(
                 ui, btn_w,
                 "Update",
-                "Replace the binary, keep all settings and shortcuts",
+                "View release notes and update",
                 Color32::from_rgb(99, 155, 255),
                 Color32::from_rgba_premultiplied(99, 155, 255, 40),
             ) {
@@ -125,58 +135,12 @@ pub fn show(
     action
 }
 
-fn draw_patch_notes(ui: &mut Ui) {
-    let width = 400.0;
-    let left_pad = (ui.available_width() - width) / 2.0;
-
-    ui.horizontal(|ui| {
-        ui.add_space(left_pad);
-        ui.vertical(|ui| {
-            ui.set_width(width);
-
-            ui.label(
-                RichText::new(format!("What's new in v{}", env!("KADR_VERSION")))
-                    .size(11.0)
-                    .color(Color32::from_gray(75)),
-            );
-            ui.add_space(4.0);
-
-            let notes_rect = ui.available_rect_before_wrap();
-            let line_count = PATCH_NOTES.lines().filter(|l| !l.trim().is_empty()).count();
-            let box_h = (line_count as f32 * 18.0 + 14.0).max(40.0);
-            let (box_rect, _) = ui.allocate_exact_size(
-                egui::vec2(width, box_h),
-                egui::Sense::hover(),
-            );
-            let _ = notes_rect;
-
-            ui.painter().rect_filled(
-                box_rect,
-                4.0,
-                Color32::from_rgb(18, 16, 26),
-            );
-            ui.painter().rect_stroke(
-                box_rect,
-                4.0,
-                egui::Stroke::new(1.0, Color32::from_rgb(45, 38, 65)),
-                egui::StrokeKind::Inside,
-            );
-
-            let mut y = box_rect.min.y + 7.0;
-            for line in PATCH_NOTES.lines() {
-                let trimmed = line.trim();
-                if trimmed.is_empty() { continue; }
-                ui.painter().text(
-                    egui::pos2(box_rect.min.x + 12.0, y),
-                    egui::Align2::LEFT_TOP,
-                    trimmed,
-                    egui::FontId::proportional(12.0),
-                    Color32::from_gray(140),
-                );
-                y += 18.0;
-            }
-        });
-    });
+fn fmt_size_abs(bytes: u64) -> String {
+    if bytes < 1_000_000 {
+        format!("{} KB", (bytes + 500) / 1_000)
+    } else {
+        format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+    }
 }
 
 fn action_row(

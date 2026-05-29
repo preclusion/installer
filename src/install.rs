@@ -1,14 +1,66 @@
 use std::{
+    collections::HashMap,
+    io::Read,
     path::{Path, PathBuf},
     sync::mpsc,
 };
 
 use anyhow::{Context, Result};
 
-static KADR_EXE: &[u8] = include_bytes!(concat!(env!("KADR_EXE_PATH")));
-static MPV_DLL: &[u8]  = include_bytes!(concat!(env!("MPV_DLL_PATH")));
-
 const BUNDLED_KADR_VERSION: &str = env!("KADR_VERSION");
+
+// ── Download config ───────────────────────────────────────────────────────────
+
+const CONFIG_STR: &str = include_str!("../downloads.toml");
+
+#[derive(serde::Deserialize, Clone)]
+pub struct DownloadEntry {
+    pub url: String,
+    pub sha256: String,
+}
+
+#[derive(serde::Deserialize)]
+struct DownloadConfig {
+    files: Vec<DownloadEntry>,
+}
+
+pub fn load_config() -> Vec<DownloadEntry> {
+    toml::from_str::<DownloadConfig>(CONFIG_STR)
+        .expect("Invalid downloads.toml")
+        .files
+}
+
+pub fn filename_from_url(url: &str) -> &str {
+    url.rsplit('/').next().unwrap_or("unknown")
+}
+
+fn sha256_of_file(path: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let data = std::fs::read(path).ok()?;
+    Some(Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn needs_download(entry: &DownloadEntry, install_dir: &Path) -> bool {
+    let path = install_dir.join(filename_from_url(&entry.url));
+    if !path.exists() { return true; }
+    sha256_of_file(&path).map_or(true, |h| h != entry.sha256)
+}
+
+pub fn get_pending_updates(install_dir: &Path) -> Vec<DownloadEntry> {
+    load_config().into_iter()
+        .filter(|e| needs_download(e, install_dir))
+        .collect()
+}
+
+pub fn fetch_remote_sizes() -> HashMap<String, u64> {
+    load_config().iter()
+        .filter_map(|e| {
+            let name = filename_from_url(&e.url).to_owned();
+            let size = head_content_length(&e.url)?;
+            Some((name, size))
+        })
+        .collect()
+}
 const KADR_REG_KEY: &str = r"Software\Kadr";
 
 pub struct ExistingInstall {
@@ -83,26 +135,36 @@ pub fn run_install(opts: &InstallOptions, tx: mpsc::Sender<InstallProgress>) {
 }
 
 pub fn run_update(install_dir: &std::path::Path, tx: mpsc::Sender<InstallProgress>) {
-    let _ = tx.send(InstallProgress::Log("Updating kadr…".to_owned()));
-    let _ = tx.send(InstallProgress::Step(0.1));
-
-    let exe_path = install_dir.join("kadr.exe");
-    if let Err(e) = std::fs::write(&exe_path, KADR_EXE) {
-        let _ = tx.send(InstallProgress::Error(format!("Cannot write {}: {e}", exe_path.display())));
+    let pending = get_pending_updates(install_dir);
+    if pending.is_empty() {
+        let _ = tx.send(InstallProgress::Log("Already up to date.".to_owned()));
+        let _ = tx.send(InstallProgress::Done);
         return;
     }
-    let _ = tx.send(InstallProgress::Log(format!("Updated {}", exe_path.display())));
-    let _ = tx.send(InstallProgress::Step(0.5));
-
-    let dll_path = install_dir.join("libmpv-2.dll");
-    if let Err(e) = std::fs::write(&dll_path, MPV_DLL) {
-        let _ = tx.send(InstallProgress::Error(format!("Cannot write {}: {e}", dll_path.display())));
-        return;
+    let n = pending.len() as f32;
+    for (i, entry) in pending.iter().enumerate() {
+        let start = i as f32 / n * 0.95;
+        let end = (i as f32 + 1.0) / n * 0.95;
+        let filename = filename_from_url(&entry.url);
+        if let Err(e) = download_file(&entry.url, &install_dir.join(filename), filename, start, end, &tx) {
+            let _ = tx.send(InstallProgress::Error(format!("{e:#}")));
+            return;
+        }
     }
-    let _ = tx.send(InstallProgress::Log(format!("Updated {}", dll_path.display())));
-    let _ = tx.send(InstallProgress::Step(0.9));
-
     let _ = write_install_registry(install_dir);
+
+    // Recreate shortcuts so the updated exe icon is picked up
+    let exe_path = install_dir.join("kadr.exe");
+    let desktop_lnk = desktop_dir().join("Kadr.lnk");
+    if desktop_lnk.exists() {
+        let _ = create_shortcut(&exe_path, &desktop_lnk, "kadr");
+    }
+    let sm_lnk = start_menu_dir().join("Kadr.lnk");
+    if sm_lnk.exists() {
+        let _ = create_shortcut(&exe_path, &sm_lnk, "kadr");
+    }
+    refresh_icon_cache();
+
     let _ = tx.send(InstallProgress::Step(1.0));
     let _ = tx.send(InstallProgress::Log("Done!".to_owned()));
     let _ = tx.send(InstallProgress::Done);
@@ -125,25 +187,25 @@ fn do_install(opts: &InstallOptions, tx: &mpsc::Sender<InstallProgress>) -> Resu
         .with_context(|| format!("Cannot create {}", opts.install_dir.display()))?;
     step += 1.0; send_step(step, tx);
 
-    // 2. Write kadr.exe
-    let exe_path = opts.install_dir.join("kadr.exe");
-    send_log(&format!("Writing {}…", exe_path.display()), tx);
-    std::fs::write(&exe_path, KADR_EXE)
-        .with_context(|| format!("Cannot write {}", exe_path.display()))?;
-    step += 1.0; send_step(step, tx);
+    // 2. Download all configured files
+    let entries = load_config();
+    let n_files = entries.len() as f32;
+    send_log("Downloading files…", tx);
+    for (i, entry) in entries.iter().enumerate() {
+        let start = (step + i as f32 / n_files) / steps;
+        let end = (step + (i as f32 + 1.0) / n_files) / steps;
+        let filename = filename_from_url(&entry.url);
+        download_file(&entry.url, &opts.install_dir.join(filename), filename, start, end, tx)?;
+    }
+    step += n_files; send_step(step, tx);
 
-    // 3. Write libmpv-2.dll (video playback runtime)
-    let dll_path = opts.install_dir.join("libmpv-2.dll");
-    send_log(&format!("Writing {}…", dll_path.display()), tx);
-    std::fs::write(&dll_path, MPV_DLL)
-        .with_context(|| format!("Cannot write {}", dll_path.display()))?;
-    step += 1.0; send_step(step, tx);
+    let exe_path = opts.install_dir.join("kadr.exe");
 
     // 4. Desktop shortcut
     if opts.desktop_shortcut {
         send_log("Creating desktop shortcut…", tx);
         let desktop = desktop_dir();
-        create_shortcut(&exe_path, &desktop.join("Kadr.lnk"), "Kadr Image Viewer")?;
+        create_shortcut(&exe_path, &desktop.join("Kadr.lnk"), "kadr")?;
     }
     step += 1.0; send_step(step, tx);
 
@@ -152,7 +214,7 @@ fn do_install(opts: &InstallOptions, tx: &mpsc::Sender<InstallProgress>) -> Resu
         send_log("Creating Start Menu shortcut…", tx);
         let sm = start_menu_dir();
         std::fs::create_dir_all(&sm).ok();
-        create_shortcut(&exe_path, &sm.join("Kadr.lnk"), "Kadr Image Viewer")?;
+        create_shortcut(&exe_path, &sm.join("Kadr.lnk"), "kadr")?;
     }
     step += 1.0; send_step(step, tx);
 
@@ -181,9 +243,53 @@ fn do_install(opts: &InstallOptions, tx: &mpsc::Sender<InstallProgress>) -> Resu
     }
     register_uninstall_entry(&exe_path, &opts.install_dir)?;
     write_install_registry(&opts.install_dir)?;
+    refresh_icon_cache();
     step += 1.0; send_step(step, tx);
 
     send_log("Done!", tx);
+    Ok(())
+}
+
+// ── Download ──────────────────────────────────────────────────────────────────
+
+fn head_content_length(url: &str) -> Option<u64> {
+    ureq::head(url).call().ok()
+        .and_then(|r| {
+            r.headers().get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok())
+        })
+}
+
+fn download_file(
+    url: &str,
+    dest: &Path,
+    label: &str,
+    progress_start: f32,
+    progress_end: f32,
+    tx: &mpsc::Sender<InstallProgress>,
+) -> Result<()> {
+    let _ = tx.send(InstallProgress::Log(format!("Downloading {label}…")));
+    let resp = ureq::get(url).call()
+        .with_context(|| format!("Failed to download {label}"))?;
+    let total: Option<u64> = resp.headers().get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok());
+    let mut reader = resp.into_body().into_reader();
+    let mut data: Vec<u8> = if let Some(t) = total { Vec::with_capacity(t as usize) } else { Vec::new() };
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = reader.read(&mut buf).context("Read error during download")?;
+        if n == 0 { break; }
+        data.extend_from_slice(&buf[..n]);
+        if let Some(t) = total {
+            let frac = progress_start + (data.len() as f32 / t as f32) * (progress_end - progress_start);
+            let _ = tx.send(InstallProgress::Step(frac));
+        }
+    }
+    std::fs::write(dest, &data)
+        .with_context(|| format!("Cannot write {}", dest.display()))?;
+    let _ = tx.send(InstallProgress::Log(format!("Installed {label}")));
     Ok(())
 }
 
@@ -194,6 +300,7 @@ fn create_shortcut(target: &Path, lnk: &Path, description: &str) -> Result<()> {
         r#"$ws = New-Object -ComObject WScript.Shell
 $s = $ws.CreateShortcut("{lnk}")
 $s.TargetPath = "{target}"
+$s.IconLocation = "{target},0"
 $s.Description = "{description}"
 $s.Save()"#,
         lnk = lnk.display(),
@@ -202,6 +309,10 @@ $s.Save()"#,
     );
     powershell(&script)?;
     Ok(())
+}
+
+fn refresh_icon_cache() {
+    let _ = powershell(r#"& "$env:SystemRoot\System32\ie4uinit.exe" -show"#);
 }
 
 fn desktop_dir() -> PathBuf {
@@ -326,7 +437,7 @@ fn register_uninstall_entry(exe: &Path, install_dir: &Path) -> Result<()> {
     let key_path =
         r"Software\Microsoft\Windows\CurrentVersion\Uninstall\kadr";
     let (key, _) = hkcu.create_subkey(key_path).context("Cannot create uninstall key")?;
-    key.set_value("DisplayName", &"Kadr Image Viewer".to_owned())?;
+    key.set_value("DisplayName", &"kadr".to_owned())?;
     key.set_value("DisplayVersion", &BUNDLED_KADR_VERSION.to_owned())?;
     key.set_value("UninstallString", &format!("\"{}\" --uninstall", exe.display()))?;
     key.set_value("InstallLocation", &install_dir.to_string_lossy().to_string())?;

@@ -1,12 +1,16 @@
 use std::sync::mpsc;
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use crate::{
     install::{InstallOptions, InstallProgress},
-    ui::{done, options, progress, welcome},
+    ui::{done, options, patchnotes, progress, welcome},
 };
 
 pub enum Page {
     Welcome,
+    PatchNotes,
     Options(InstallOptions),
     Progress(ProgressState),
     Done(DoneState),
@@ -39,13 +43,23 @@ pub struct DoneState {
 pub struct InstallerApp {
     pub page: Page,
     pub existing_install: Option<crate::install::ExistingInstall>,
+    pub remote_sizes: Arc<Mutex<Option<HashMap<String, u64>>>>,
 }
 
 impl InstallerApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let remote_sizes: Arc<Mutex<Option<HashMap<String, u64>>>> = Arc::new(Mutex::new(None));
+        let sizes_ref = Arc::clone(&remote_sizes);
+        let ctx = cc.egui_ctx.clone();
+        std::thread::spawn(move || {
+            let sizes = crate::install::fetch_remote_sizes();
+            *sizes_ref.lock().unwrap() = Some(sizes);
+            ctx.request_repaint();
+        });
         Self {
             page: Page::Welcome,
             existing_install: crate::install::detect_existing_install(),
+            remote_sizes,
         }
     }
 }
@@ -66,31 +80,15 @@ impl eframe::App for InstallerApp {
                     Page::Welcome => {
                         let existing_dir = self.existing_install.as_ref().map(|e| e.dir.as_path());
                         let installed_ver = self.existing_install.as_ref().and_then(|e| e.version.as_deref());
-                        if let Some(action) = welcome::show(ui, existing_dir, installed_ver) {
+                        let remote = self.remote_sizes.lock().unwrap().clone();
+                        let total_size = remote.as_ref().map(|m| m.values().sum::<u64>());
+                        if let Some(action) = welcome::show(ui, existing_dir, installed_ver, total_size) {
                             match action {
                                 welcome::WelcomeAction::Install => {
                                     self.page = Page::Options(InstallOptions::default());
                                 }
                                 welcome::WelcomeAction::Update => {
-                                    if let Some(existing) = &self.existing_install {
-                                        let (tx, rx) = mpsc::channel();
-                                        let dir = existing.dir.clone();
-                                        let dir2 = dir.clone();
-                                        std::thread::spawn(move || {
-                                            crate::install::run_update(&dir, tx);
-                                        });
-                                        let mut opts = InstallOptions::default();
-                                        opts.install_dir = dir2;
-                                        self.page = Page::Progress(ProgressState {
-                                            rx,
-                                            log: Vec::new(),
-                                            fraction: 0.0,
-                                            finished: false,
-                                            error: None,
-                                            options: opts,
-                                            operation: Operation::Update,
-                                        });
-                                    }
+                                    self.page = Page::PatchNotes;
                                 }
                                 welcome::WelcomeAction::Remove => {
                                     if let Some(existing) = &self.existing_install {
@@ -110,6 +108,54 @@ impl eframe::App for InstallerApp {
                                             error: None,
                                             options: opts,
                                             operation: Operation::Uninstall,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Page::PatchNotes => {
+                        let pending = self.existing_install.as_ref()
+                            .map(|e| crate::install::get_pending_updates(&e.dir))
+                            .unwrap_or_default();
+                        let all_up_to_date = pending.is_empty();
+                        let remote = self.remote_sizes.lock().unwrap().clone();
+                        let size_delta = remote.as_ref().map(|remote_map| {
+                            let install_dir = self.existing_install.as_ref().map(|e| e.dir.as_path());
+                            pending.iter().map(|entry| {
+                                let filename = crate::install::filename_from_url(&entry.url);
+                                let remote_size = remote_map.get(filename).copied().unwrap_or(0) as i64;
+                                let local_size = install_dir
+                                    .and_then(|d| std::fs::metadata(d.join(filename)).ok())
+                                    .map(|m| m.len() as i64)
+                                    .unwrap_or(0);
+                                remote_size - local_size
+                            }).sum::<i64>()
+                        });
+                        if let Some(action) = patchnotes::show(ui, size_delta, all_up_to_date) {
+                            match action {
+                                patchnotes::PatchNotesAction::Back => {
+                                    self.page = Page::Welcome;
+                                }
+                                patchnotes::PatchNotesAction::Confirm => {
+                                    if let Some(existing) = &self.existing_install {
+                                        let (tx, rx) = mpsc::channel();
+                                        let dir = existing.dir.clone();
+                                        let dir2 = dir.clone();
+                                        std::thread::spawn(move || {
+                                            crate::install::run_update(&dir, tx);
+                                        });
+                                        let mut opts = InstallOptions::default();
+                                        opts.install_dir = dir2;
+                                        self.page = Page::Progress(ProgressState {
+                                            rx,
+                                            log: Vec::new(),
+                                            fraction: 0.0,
+                                            finished: false,
+                                            error: None,
+                                            options: opts,
+                                            operation: Operation::Update,
                                         });
                                     }
                                 }
