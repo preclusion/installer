@@ -7,16 +7,17 @@ pub enum PatchNotesAction {
     Back,
 }
 
-pub fn show(ui: &mut Ui, size_delta: Option<i64>, all_up_to_date: bool) -> Option<PatchNotesAction> {
+pub fn show(ui: &mut Ui, size_delta: Option<i64>, all_up_to_date: bool, kadr_version: Option<&str>) -> Option<PatchNotesAction> {
     let mut action = None;
 
     ui.add_space(16.0);
 
     ui.vertical_centered(|ui| {
+        let ver = kadr_version.unwrap_or("…");
         let title = if all_up_to_date {
-            format!("kadr v{} — Already up to date", env!("KADR_VERSION"))
+            format!("kadr v{ver} — Already up to date")
         } else {
-            format!("What's new in v{}", env!("KADR_VERSION"))
+            format!("What's new in v{ver}")
         };
         ui.label(
             RichText::new(title)

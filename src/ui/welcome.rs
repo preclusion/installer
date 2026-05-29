@@ -12,6 +12,7 @@ pub fn show(
     ui: &mut Ui,
     existing_dir: Option<&Path>,
     installed_version: Option<&str>,
+    remote_version: Option<&str>,
     total_install_size: Option<u64>,
 ) -> Option<WelcomeAction> {
     let mut action = None;
@@ -29,7 +30,7 @@ pub fn show(
 
         if let Some(dir) = existing_dir {
             let installed_str = installed_version.unwrap_or("unknown");
-            let this_str = env!("KADR_VERSION");
+            let this_str = remote_version.unwrap_or("…");
             ui.label(
                 RichText::new(format!(
                     "Installed: v{}    →    This installer: v{}",
@@ -48,7 +49,7 @@ pub fn show(
             );
         } else {
             ui.label(
-                RichText::new(format!("v{}  ·  Fast, minimal image viewer", env!("KADR_VERSION")))
+                RichText::new(format!("v{}  ·  Fast, minimal image viewer", remote_version.unwrap_or("…")))
                     .size(13.0)
                     .color(Color32::from_gray(100)),
             );

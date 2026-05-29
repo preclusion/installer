@@ -7,56 +7,125 @@ use std::{
 
 use anyhow::{Context, Result};
 
-const BUNDLED_KADR_VERSION: &str = env!("KADR_VERSION");
-
 // ── Download config ───────────────────────────────────────────────────────────
 
-const CONFIG_STR: &str = include_str!("../downloads.toml");
-
-#[derive(serde::Deserialize, Clone)]
+#[derive(Clone)]
 pub struct DownloadEntry {
-    pub url: String,
-    pub sha256: String,
+    pub url: &'static str,
+    pub release_tag: &'static str,
 }
 
-#[derive(serde::Deserialize)]
-struct DownloadConfig {
-    files: Vec<DownloadEntry>,
-}
+const DOWNLOADS: &[DownloadEntry] = &[
+    DownloadEntry {
+        url: "https://github.com/konnatoad/installer/releases/download/kadr/kadr.exe",
+        release_tag: "kadr",
+    },
+    DownloadEntry {
+        url: "https://github.com/konnatoad/installer/releases/download/libmpv-2/libmpv-2.dll",
+        release_tag: "libmpv-2",
+    },
+];
 
 pub fn load_config() -> Vec<DownloadEntry> {
-    toml::from_str::<DownloadConfig>(CONFIG_STR)
-        .expect("Invalid downloads.toml")
-        .files
+    DOWNLOADS.to_vec()
 }
 
 pub fn filename_from_url(url: &str) -> &str {
     url.rsplit('/').next().unwrap_or("unknown")
 }
 
-fn sha256_of_file(path: &Path) -> Option<String> {
-    use sha2::{Digest, Sha256};
-    let data = std::fs::read(path).ok()?;
-    Some(Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect())
+pub fn fetch_release_version() -> Option<String> {
+    fetch_release("kadr")?.version
 }
 
-fn needs_download(entry: &DownloadEntry, install_dir: &Path) -> bool {
-    let path = install_dir.join(filename_from_url(&entry.url));
-    if !path.exists() { return true; }
-    sha256_of_file(&path).map_or(true, |h| h != entry.sha256)
+struct ReleaseInfo {
+    version: Option<String>,
+    asset_timestamps: HashMap<String, String>,
 }
 
-pub fn get_pending_updates(install_dir: &Path) -> Vec<DownloadEntry> {
-    load_config().into_iter()
-        .filter(|e| needs_download(e, install_dir))
-        .collect()
+fn fetch_release(tag: &str) -> Option<ReleaseInfo> {
+    let url = format!("https://api.github.com/repos/konnatoad/installer/releases/tags/{tag}");
+    let resp = ureq::get(&url)
+        .header("User-Agent", "kadr-installer")
+        .call().ok()?;
+    let text = resp.into_body().read_to_string().ok()?;
+    let body: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let version = body["name"].as_str()
+        .map(|s| s.trim_start_matches(|c| c == 'v' || c == 'V').to_owned());
+    let asset_timestamps = body["assets"].as_array()
+        .map(|arr| arr.iter().filter_map(|a| {
+            let name = a["name"].as_str()?.to_owned();
+            let ts = a["updated_at"].as_str()?.to_owned();
+            Some((name, ts))
+        }).collect())
+        .unwrap_or_default();
+    Some(ReleaseInfo { version, asset_timestamps })
+}
+
+fn stored_updated_at(filename: &str) -> Option<String> {
+    use winreg::{enums::*, RegKey};
+    let key = RegKey::predef(HKEY_CURRENT_USER).open_subkey(KADR_REG_KEY).ok()?;
+    key.get_value::<String, _>(&format!("UpdatedAt_{filename}")).ok()
+}
+
+fn store_updated_at(filename: &str, updated_at: &str) {
+    use winreg::{enums::*, RegKey};
+    if let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(KADR_REG_KEY) {
+        let _ = key.set_value(&format!("UpdatedAt_{filename}"), &updated_at.to_owned());
+    }
+}
+
+pub struct PendingUpdate {
+    pub entry: DownloadEntry,
+    pub updated_at: Option<String>,
+}
+
+pub struct UpdateCheckResult {
+    pub pending: Vec<PendingUpdate>,
+    pub kadr_version: Option<String>,
+}
+
+pub fn get_pending_updates(install_dir: &Path, installed_version: Option<&str>) -> UpdateCheckResult {
+    let mut pending = Vec::new();
+    let mut kadr_version = None;
+
+    for entry in load_config() {
+        let filename = filename_from_url(entry.url);
+        let path = install_dir.join(filename);
+        let missing = !path.exists();
+
+        match fetch_release(entry.release_tag) {
+            Some(release) => {
+                if entry.release_tag == "kadr" {
+                    kadr_version = release.version.clone();
+                }
+                let version_changed = installed_version
+                    .zip(release.version.as_deref())
+                    .map_or(false, |(iv, rv)| iv != rv);
+                let ts_changed = release.asset_timestamps.get(filename)
+                    .map_or(false, |rt| stored_updated_at(filename).map_or(true, |s| &s != rt));
+                if missing || version_changed || ts_changed {
+                    let updated_at = release.asset_timestamps.get(filename).cloned();
+                    pending.push(PendingUpdate { entry, updated_at });
+                }
+            }
+            None => {
+                // API failed — still re-download if file is missing
+                if missing {
+                    pending.push(PendingUpdate { entry, updated_at: None });
+                }
+            }
+        }
+    }
+
+    UpdateCheckResult { pending, kadr_version }
 }
 
 pub fn fetch_remote_sizes() -> HashMap<String, u64> {
     load_config().iter()
         .filter_map(|e| {
-            let name = filename_from_url(&e.url).to_owned();
-            let size = head_content_length(&e.url)?;
+            let name = filename_from_url(e.url).to_owned();
+            let size = head_content_length(e.url)?;
             Some((name, size))
         })
         .collect()
@@ -135,23 +204,25 @@ pub fn run_install(opts: &InstallOptions, tx: mpsc::Sender<InstallProgress>) {
 }
 
 pub fn run_update(install_dir: &std::path::Path, tx: mpsc::Sender<InstallProgress>) {
-    let pending = get_pending_updates(install_dir);
-    if pending.is_empty() {
+    let result = get_pending_updates(install_dir, None);
+    if result.pending.is_empty() {
         let _ = tx.send(InstallProgress::Log("Already up to date.".to_owned()));
         let _ = tx.send(InstallProgress::Done);
         return;
     }
-    let n = pending.len() as f32;
-    for (i, entry) in pending.iter().enumerate() {
+    let n = result.pending.len() as f32;
+    for (i, update) in result.pending.iter().enumerate() {
         let start = i as f32 / n * 0.95;
         let end = (i as f32 + 1.0) / n * 0.95;
-        let filename = filename_from_url(&entry.url);
-        if let Err(e) = download_file(&entry.url, &install_dir.join(filename), filename, start, end, &tx) {
+        let filename = filename_from_url(update.entry.url);
+        if let Err(e) = download_file(update.entry.url, &install_dir.join(filename), filename, start, end, &tx) {
             let _ = tx.send(InstallProgress::Error(format!("{e:#}")));
             return;
         }
+        if let Some(ts) = &update.updated_at { store_updated_at(filename, ts); }
     }
-    let _ = write_install_registry(install_dir);
+    let version = result.kadr_version.unwrap_or_else(|| "unknown".to_owned());
+    let _ = write_install_registry(install_dir, &version);
 
     // Recreate shortcuts so the updated exe icon is picked up
     let exe_path = install_dir.join("kadr.exe");
@@ -188,14 +259,20 @@ fn do_install(opts: &InstallOptions, tx: &mpsc::Sender<InstallProgress>) -> Resu
     step += 1.0; send_step(step, tx);
 
     // 2. Download all configured files
+    let kadr_version = fetch_release("kadr").and_then(|r| r.version).unwrap_or_else(|| "unknown".to_owned());
     let entries = load_config();
     let n_files = entries.len() as f32;
     send_log("Downloading files…", tx);
     for (i, entry) in entries.iter().enumerate() {
         let start = (step + i as f32 / n_files) / steps;
         let end = (step + (i as f32 + 1.0) / n_files) / steps;
-        let filename = filename_from_url(&entry.url);
-        download_file(&entry.url, &opts.install_dir.join(filename), filename, start, end, tx)?;
+        let filename = filename_from_url(entry.url);
+        let remote_ts = fetch_release(entry.release_tag)
+            .and_then(|r| r.asset_timestamps.get(filename).cloned());
+        download_file(entry.url, &opts.install_dir.join(filename), filename, start, end, tx)?;
+        if let Some(ts) = remote_ts {
+            store_updated_at(filename, &ts);
+        }
     }
     step += n_files; send_step(step, tx);
 
@@ -241,8 +318,8 @@ fn do_install(opts: &InstallOptions, tx: &mpsc::Sender<InstallProgress>) -> Resu
         send_log("Setting default video viewer…", tx);
         set_default_video_viewer(&exe_path)?;
     }
-    register_uninstall_entry(&exe_path, &opts.install_dir)?;
-    write_install_registry(&opts.install_dir)?;
+    register_uninstall_entry(&exe_path, &opts.install_dir, &kadr_version)?;
+    write_install_registry(&opts.install_dir, &kadr_version)?;
     refresh_icon_cache();
     step += 1.0; send_step(step, tx);
 
@@ -431,14 +508,14 @@ fn set_user_file_assoc(ext: &str, prog_id: &str) -> Result<()> {
 
 // ── Uninstall entry ───────────────────────────────────────────────────────────
 
-fn register_uninstall_entry(exe: &Path, install_dir: &Path) -> Result<()> {
+fn register_uninstall_entry(exe: &Path, install_dir: &Path, version: &str) -> Result<()> {
     use winreg::{enums::*, RegKey};
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let key_path =
         r"Software\Microsoft\Windows\CurrentVersion\Uninstall\kadr";
     let (key, _) = hkcu.create_subkey(key_path).context("Cannot create uninstall key")?;
     key.set_value("DisplayName", &"kadr".to_owned())?;
-    key.set_value("DisplayVersion", &BUNDLED_KADR_VERSION.to_owned())?;
+    key.set_value("DisplayVersion", &version.to_owned())?;
     key.set_value("UninstallString", &format!("\"{}\" --uninstall", exe.display()))?;
     key.set_value("InstallLocation", &install_dir.to_string_lossy().to_string())?;
     key.set_value("DisplayIcon", &format!("\"{}\",0", exe.display()))?;
@@ -450,12 +527,12 @@ fn register_uninstall_entry(exe: &Path, install_dir: &Path) -> Result<()> {
 
 // ── Registry ─────────────────────────────────────────────────────────────────
 
-fn write_install_registry(install_dir: &Path) -> Result<()> {
+fn write_install_registry(install_dir: &Path, version: &str) -> Result<()> {
     use winreg::{enums::*, RegKey};
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let (key, _) = hkcu.create_subkey(KADR_REG_KEY).context("Cannot create Kadr registry key")?;
     key.set_value("InstallPath", &install_dir.to_string_lossy().to_string())?;
-    key.set_value("InstalledVersion", &BUNDLED_KADR_VERSION.to_owned())?;
+    key.set_value("InstalledVersion", &version.to_owned())?;
     Ok(())
 }
 

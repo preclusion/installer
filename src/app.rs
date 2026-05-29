@@ -10,10 +10,15 @@ use crate::{
 
 pub enum Page {
     Welcome,
-    PatchNotes,
+    PatchNotes(PatchNotesState),
     Options(InstallOptions),
     Progress(ProgressState),
     Done(DoneState),
+}
+
+pub struct PatchNotesState {
+    pub pending: Vec<crate::install::PendingUpdate>,
+    pub kadr_version: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -44,6 +49,7 @@ pub struct InstallerApp {
     pub page: Page,
     pub existing_install: Option<crate::install::ExistingInstall>,
     pub remote_sizes: Arc<Mutex<Option<HashMap<String, u64>>>>,
+    pub remote_kadr_version: Arc<Mutex<Option<String>>>,
 }
 
 impl InstallerApp {
@@ -56,10 +62,22 @@ impl InstallerApp {
             *sizes_ref.lock().unwrap() = Some(sizes);
             ctx.request_repaint();
         });
+
+        let remote_kadr_version: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let ver_ref = Arc::clone(&remote_kadr_version);
+        let ctx = cc.egui_ctx.clone();
+        std::thread::spawn(move || {
+            if let Some(r) = crate::install::fetch_release_version() {
+                *ver_ref.lock().unwrap() = Some(r);
+                ctx.request_repaint();
+            }
+        });
+
         Self {
             page: Page::Welcome,
             existing_install: crate::install::detect_existing_install(),
             remote_sizes,
+            remote_kadr_version,
         }
     }
 }
@@ -73,22 +91,27 @@ impl eframe::App for InstallerApp {
         egui::CentralPanel::default()
             .frame(frame)
             .show_inside(ui, |ui| {
-                draw_header(ui);
+                let kadr_ver = self.remote_kadr_version.lock().unwrap().clone();
+                draw_header(ui, kadr_ver.as_deref());
                 ui.add_space(8.0);
 
                 match &mut self.page {
                     Page::Welcome => {
                         let existing_dir = self.existing_install.as_ref().map(|e| e.dir.as_path());
                         let installed_ver = self.existing_install.as_ref().and_then(|e| e.version.as_deref());
+                        let remote_ver = self.remote_kadr_version.lock().unwrap().clone();
                         let remote = self.remote_sizes.lock().unwrap().clone();
                         let total_size = remote.as_ref().map(|m| m.values().sum::<u64>());
-                        if let Some(action) = welcome::show(ui, existing_dir, installed_ver, total_size) {
+                        if let Some(action) = welcome::show(ui, existing_dir, installed_ver, remote_ver.as_deref(), total_size) {
                             match action {
                                 welcome::WelcomeAction::Install => {
                                     self.page = Page::Options(InstallOptions::default());
                                 }
                                 welcome::WelcomeAction::Update => {
-                                    self.page = Page::PatchNotes;
+                                    let result = self.existing_install.as_ref()
+                                        .map(|e| crate::install::get_pending_updates(&e.dir, e.version.as_deref()))
+                                        .unwrap_or_else(|| crate::install::UpdateCheckResult { pending: vec![], kadr_version: None });
+                                    self.page = Page::PatchNotes(PatchNotesState { pending: result.pending, kadr_version: result.kadr_version });
                                 }
                                 welcome::WelcomeAction::Remove => {
                                     if let Some(existing) = &self.existing_install {
@@ -115,16 +138,13 @@ impl eframe::App for InstallerApp {
                         }
                     }
 
-                    Page::PatchNotes => {
-                        let pending = self.existing_install.as_ref()
-                            .map(|e| crate::install::get_pending_updates(&e.dir))
-                            .unwrap_or_default();
-                        let all_up_to_date = pending.is_empty();
+                    Page::PatchNotes(state) => {
+                        let all_up_to_date = state.pending.is_empty();
                         let remote = self.remote_sizes.lock().unwrap().clone();
                         let size_delta = remote.as_ref().map(|remote_map| {
                             let install_dir = self.existing_install.as_ref().map(|e| e.dir.as_path());
-                            pending.iter().map(|entry| {
-                                let filename = crate::install::filename_from_url(&entry.url);
+                            state.pending.iter().map(|update| {
+                                let filename = crate::install::filename_from_url(update.entry.url);
                                 let remote_size = remote_map.get(filename).copied().unwrap_or(0) as i64;
                                 let local_size = install_dir
                                     .and_then(|d| std::fs::metadata(d.join(filename)).ok())
@@ -133,7 +153,7 @@ impl eframe::App for InstallerApp {
                                 remote_size - local_size
                             }).sum::<i64>()
                         });
-                        if let Some(action) = patchnotes::show(ui, size_delta, all_up_to_date) {
+                        if let Some(action) = patchnotes::show(ui, size_delta, all_up_to_date, state.kadr_version.as_deref()) {
                             match action {
                                 patchnotes::PatchNotesAction::Back => {
                                     self.page = Page::Welcome;
@@ -265,7 +285,7 @@ impl eframe::App for InstallerApp {
     }
 }
 
-fn draw_header(ui: &mut egui::Ui) {
+fn draw_header(ui: &mut egui::Ui, kadr_version: Option<&str>) {
     let available_w = ui.available_width();
     let height = 52.0;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(available_w, height), egui::Sense::hover());
@@ -290,7 +310,7 @@ fn draw_header(ui: &mut egui::Ui) {
 
     let ver_text = format!(
         "kadr v{}   installer v{}",
-        env!("KADR_VERSION"),
+        kadr_version.unwrap_or("…"),
         env!("CARGO_PKG_VERSION"),
     );
     p.text(

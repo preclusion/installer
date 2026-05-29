@@ -1,7 +1,0 @@
-[[files]]
-url = "https://github.com/konnatoad/installer/releases/download/kadr/kadr.exe"
-sha256 = "cb927e0af83064ca9276b78f957158cfb3110326e9853da05493983a6511aa1f"
-
-[[files]]
-url = "https://github.com/konnatoad/installer/releases/download/libmpv-2/libmpv-2.dll"
-sha256 = "e7ee66e00f231bd1a0f46c349c406fd7ecfffd46fbe15e90f6b1e5e2eba4ee79"
