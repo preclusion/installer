@@ -85,7 +85,7 @@ pub struct UpdateCheckResult {
     pub kadr_version: Option<String>,
 }
 
-pub fn get_pending_updates(install_dir: &Path, _installed_version: Option<&str>) -> UpdateCheckResult {
+pub fn get_pending_updates(install_dir: &Path) -> UpdateCheckResult {
     let mut pending = Vec::new();
     let mut kadr_version = None;
 
@@ -209,7 +209,7 @@ pub fn run_install(opts: &InstallOptions, tx: mpsc::Sender<InstallProgress>) {
 }
 
 pub fn run_update(install_dir: &std::path::Path, tx: mpsc::Sender<InstallProgress>) {
-    let result = get_pending_updates(install_dir, None);
+    let result = get_pending_updates(install_dir);
     if result.pending.is_empty() {
         let _ = tx.send(InstallProgress::Log("Already up to date.".to_owned()));
         let _ = tx.send(InstallProgress::Done);
@@ -264,7 +264,8 @@ fn do_install(opts: &InstallOptions, tx: &mpsc::Sender<InstallProgress>) -> Resu
     step += 1.0; send_step(step, tx);
 
     // 2. Download all configured files
-    let kadr_version = fetch_release("kadr").and_then(|r| r.version).unwrap_or_else(|| "unknown".to_owned());
+    let kadr_release = fetch_release("kadr");
+    let kadr_version = kadr_release.as_ref().and_then(|r| r.version.clone()).unwrap_or_else(|| "unknown".to_owned());
     let entries = load_config();
     let n_files = entries.len() as f32;
     send_log("Downloading files…", tx);
@@ -272,8 +273,11 @@ fn do_install(opts: &InstallOptions, tx: &mpsc::Sender<InstallProgress>) -> Resu
         let start = (step + i as f32 / n_files) / steps;
         let end = (step + (i as f32 + 1.0) / n_files) / steps;
         let filename = filename_from_url(entry.url);
-        let remote_ts = fetch_release(entry.release_tag)
-            .and_then(|r| r.asset_timestamps.get(filename).cloned());
+        let remote_ts = if entry.release_tag == "kadr" {
+            kadr_release.as_ref().and_then(|r| r.asset_timestamps.get(filename).cloned())
+        } else {
+            fetch_release(entry.release_tag).and_then(|r| r.asset_timestamps.get(filename).cloned())
+        };
         download_file(entry.url, &opts.install_dir.join(filename), filename, start, end, tx)?;
         if let Some(ts) = remote_ts {
             store_updated_at(filename, &ts);

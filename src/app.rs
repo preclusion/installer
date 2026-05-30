@@ -10,6 +10,7 @@ use crate::{
 
 pub enum Page {
     Welcome,
+    UpdateChecking(mpsc::Receiver<crate::install::UpdateCheckResult>),
     PatchNotes(PatchNotesState),
     Options(InstallOptions),
     Progress(ProgressState),
@@ -108,10 +109,19 @@ impl eframe::App for InstallerApp {
                                     self.page = Page::Options(InstallOptions::default());
                                 }
                                 welcome::WelcomeAction::Update => {
-                                    let result = self.existing_install.as_ref()
-                                        .map(|e| crate::install::get_pending_updates(&e.dir, e.version.as_deref()))
-                                        .unwrap_or_else(|| crate::install::UpdateCheckResult { pending: vec![], kadr_version: None });
-                                    self.page = Page::PatchNotes(PatchNotesState { pending: result.pending, kadr_version: result.kadr_version });
+                                    let (tx, rx) = mpsc::channel();
+                                    if let Some(existing) = &self.existing_install {
+                                        let dir = existing.dir.clone();
+                                        let ctx = ctx.clone();
+                                        std::thread::spawn(move || {
+                                            let result = crate::install::get_pending_updates(&dir);
+                                            let _ = tx.send(result);
+                                            ctx.request_repaint();
+                                        });
+                                    } else {
+                                        let _ = tx.send(crate::install::UpdateCheckResult { pending: vec![], kadr_version: None });
+                                    }
+                                    self.page = Page::UpdateChecking(rx);
                                 }
                                 welcome::WelcomeAction::Remove => {
                                     if let Some(existing) = &self.existing_install {
@@ -135,6 +145,20 @@ impl eframe::App for InstallerApp {
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    Page::UpdateChecking(rx) => {
+                        if let Ok(result) = rx.try_recv() {
+                            self.page = Page::PatchNotes(PatchNotesState {
+                                pending: result.pending,
+                                kadr_version: result.kadr_version,
+                            });
+                        } else {
+                            ui.centered_and_justified(|ui| {
+                                ui.label("Checking for updates…");
+                            });
+                            ctx.request_repaint_after(std::time::Duration::from_millis(50));
                         }
                     }
 
