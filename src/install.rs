@@ -45,11 +45,9 @@ struct ReleaseInfo {
 
 fn fetch_release(tag: &str) -> Option<ReleaseInfo> {
     let url = format!("https://api.github.com/repos/konnatoad/installer/releases/tags/{tag}");
-    let mut req = ureq::get(&url).header("User-Agent", "kadr-installer");
-    if let Some(token) = option_env!("GITHUB_TOKEN") {
-        req = req.header("Authorization", &format!("Bearer {token}"));
-    }
-    let resp = req.call().ok()?;
+    let resp = ureq::get(&url)
+        .header("User-Agent", "kadr-installer")
+        .call().ok()?;
     let text = resp.into_body().read_to_string().ok()?;
     let body: serde_json::Value = serde_json::from_str(&text).ok()?;
     let version = body["name"].as_str()

@@ -1,10 +1,4 @@
 fn main() {
-    // Embed GitHub token at build time if provided (avoids API rate limiting)
-    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-        println!("cargo:rustc-env=GITHUB_TOKEN={token}");
-    }
-    println!("cargo:rerun-if-env-changed=GITHUB_TOKEN");
-
     // Windows manifest + version info
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         let mut res = winres::WindowsResource::new();
