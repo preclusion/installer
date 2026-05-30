@@ -85,36 +85,41 @@ pub struct UpdateCheckResult {
     pub kadr_version: Option<String>,
 }
 
-pub fn get_pending_updates(install_dir: &Path, installed_version: Option<&str>) -> UpdateCheckResult {
+pub fn get_pending_updates(install_dir: &Path, _installed_version: Option<&str>) -> UpdateCheckResult {
     let mut pending = Vec::new();
     let mut kadr_version = None;
 
     for entry in load_config() {
         let filename = filename_from_url(entry.url);
         let path = install_dir.join(filename);
-        let missing = !path.exists();
+
+        if !path.exists() {
+            pending.push(PendingUpdate { entry, updated_at: None });
+            continue;
+        }
 
         match fetch_release(entry.release_tag) {
             Some(release) => {
                 if entry.release_tag == "kadr" {
                     kadr_version = release.version.clone();
                 }
-                let version_changed = installed_version
-                    .zip(release.version.as_deref())
-                    .map_or(false, |(iv, rv)| iv != rv);
-                let ts_changed = release.asset_timestamps.get(filename)
-                    .map_or(false, |rt| stored_updated_at(filename).map_or(true, |s| &s != rt));
-                if missing || version_changed || ts_changed {
-                    let updated_at = release.asset_timestamps.get(filename).cloned();
-                    pending.push(PendingUpdate { entry, updated_at });
+                if let Some(remote_ts) = release.asset_timestamps.get(filename) {
+                    match stored_updated_at(filename) {
+                        Some(stored) if stored == *remote_ts => {
+                            // up to date, nothing to do
+                        }
+                        Some(_) => {
+                            // timestamp differs — needs update
+                            pending.push(PendingUpdate { entry, updated_at: Some(remote_ts.clone()) });
+                        }
+                        None => {
+                            // no stored timestamp — trust the file, just store it
+                            store_updated_at(filename, remote_ts);
+                        }
+                    }
                 }
             }
-            None => {
-                // API failed — still re-download if file is missing
-                if missing {
-                    pending.push(PendingUpdate { entry, updated_at: None });
-                }
-            }
+            None => {} // API failed, file exists, assume up to date
         }
     }
 
@@ -532,7 +537,9 @@ fn write_install_registry(install_dir: &Path, version: &str) -> Result<()> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let (key, _) = hkcu.create_subkey(KADR_REG_KEY).context("Cannot create Kadr registry key")?;
     key.set_value("InstallPath", &install_dir.to_string_lossy().to_string())?;
-    key.set_value("InstalledVersion", &version.to_owned())?;
+    if version != "unknown" {
+        key.set_value("InstalledVersion", &version.to_owned())?;
+    }
     Ok(())
 }
 
